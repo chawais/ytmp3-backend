@@ -1,7 +1,7 @@
 // server.js
 const express = require("express");
 const cors = require("cors");
-const ytdl = require("@distube/ytdl-core");
+const ytdl = require("ytdl-core"); // ✅ switched to main ytdl-core
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 
@@ -46,17 +46,28 @@ app.get("/downloadmp3", async (req, res) => {
     const audioStream = ytdl(url, {
       filter: "audioonly",
       quality: "highestaudio",
-      // larger buffer helps avoid throttling on some hosts
       highWaterMark: 1 << 25,
+      requestOptions: { // ✅ add headers to avoid 429
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+          "Accept-Language": "en-US,en;q=0.9"
+        }
+      }
     });
 
     audioStream.on("error", (err) => {
       console.error("ytdl error:", err?.message || err);
-      if (!res.headersSent) res.status(500).send("Error fetching audio stream");
+      if (!res.headersSent) {
+        if (err.statusCode === 429) {
+          res.status(429).send("YouTube rate limit reached. Please try again later.");
+        } else {
+          res.status(500).send("Error fetching audio stream");
+        }
+      }
     });
 
     ffmpeg(audioStream)
-      .audioBitrate(192)          // good quality + smaller file than 320
+      .audioBitrate(192) // good balance
       .format("mp3")
       .on("error", (err) => {
         console.error("FFmpeg error:", err?.message || err);
