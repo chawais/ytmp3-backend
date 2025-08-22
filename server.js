@@ -1,11 +1,18 @@
 const express = require("express");
-const youtubedl = require("yt-dlp-exec"); // or "youtube-dl-exec" if that's what installed
 const cors = require("cors");
+const ytdl = require("ytdl-core");
+const ffmpeg = require("fluent-ffmpeg");
+const ffmpegPath = require("ffmpeg-static");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
+
+// Health check
+app.get("/", (req, res) => {
+  res.send("✅ YTMP3 Backend is running!");
+});
 
 // Route: Convert YouTube to MP3
 app.get("/downloadmp3", async (req, res) => {
@@ -13,18 +20,23 @@ app.get("/downloadmp3", async (req, res) => {
   if (!url) return res.status(400).send("No URL provided");
 
   try {
-    res.setHeader("Content-Disposition", "attachment; filename=audio.mp3");
+    const info = await ytdl.getInfo(url);
+    const title = info.videoDetails.title.replace(/[^\w\s]/gi, "_");
 
-    const proc = youtubedl.exec(url, {
-      output: "-",
-      extractAudio: true,
-      audioFormat: "mp3",
-      audioQuality: "0" // best
-    });
+    res.header("Content-Disposition", `attachment; filename="${title}.mp3"`);
 
-    proc.stdout.pipe(res);
+    ffmpeg(ytdl(url, { filter: "audioonly" }))
+      .setFfmpegPath(ffmpegPath)
+      .audioBitrate(128)
+      .toFormat("mp3")
+      .on("error", (err) => {
+        console.error("FFmpeg error:", err);
+        res.status(500).send("Error processing video");
+      })
+      .pipe(res, { end: true });
+
   } catch (err) {
-    console.error(err);
+    console.error("Download error:", err);
     res.status(500).send("Error processing video");
   }
 });
