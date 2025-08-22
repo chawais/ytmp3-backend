@@ -1,46 +1,76 @@
+// server.js
 const express = require("express");
 const cors = require("cors");
-const ytdl = require("ytdl-core");
+const ytdl = require("@distube/ytdl-core");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// CORS (allow all or restrict to your frontend domain)
+app.use(cors({ origin: "*" }));
+
+// Make sure ffmpeg-static is used
+ffmpeg.setFfmpegPath(ffmpegPath);
 
 // Health check
 app.get("/", (req, res) => {
   res.send("✅ YTMP3 Backend is running!");
 });
 
-// Route: Convert YouTube to MP3
+// /downloadmp3?url=<YouTube URL>
 app.get("/downloadmp3", async (req, res) => {
   const url = req.query.url;
-  if (!url) return res.status(400).send("No URL provided");
+
+  // 1) Validate input
+  if (!url || !ytdl.validateURL(url)) {
+    return res.status(400).send("Invalid or missing YouTube URL");
+  }
 
   try {
-    const info = await ytdl.getInfo(url);
-    const title = info.videoDetails.title.replace(/[^\w\s]/gi, "_");
+    // 2) Basic info & filename
+    const info = await ytdl.getBasicInfo(url);
+    const isLive = info.videoDetails.isLive;
+    if (isLive) return res.status(400).send("Live streams are not supported");
 
-    res.header("Content-Disposition", `attachment; filename="${title}.mp3"`);
+    const rawTitle = info.videoDetails.title || "audio";
+    const safeTitle = rawTitle.replace(/[^\w\s-]/g, "_").trim().slice(0, 80) || "audio";
 
-    ffmpeg(ytdl(url, { filter: "audioonly" }))
-      .setFfmpegPath(ffmpegPath)
-      .audioBitrate(128)
-      .toFormat("mp3")
+    // 3) Headers for download
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.mp3"`);
+    res.setHeader("Cache-Control", "no-store");
+
+    // 4) Stream: YouTube (audio only) -> ffmpeg -> client
+    const audioStream = ytdl(url, {
+      filter: "audioonly",
+      quality: "highestaudio",
+      // larger buffer helps avoid throttling on some hosts
+      highWaterMark: 1 << 25,
+    });
+
+    audioStream.on("error", (err) => {
+      console.error("ytdl error:", err?.message || err);
+      if (!res.headersSent) res.status(500).send("Error fetching audio stream");
+    });
+
+    ffmpeg(audioStream)
+      .audioBitrate(192)          // good quality + smaller file than 320
+      .format("mp3")
       .on("error", (err) => {
-        console.error("FFmpeg error:", err);
-        res.status(500).send("Error processing video");
+        console.error("FFmpeg error:", err?.message || err);
+        if (!res.headersSent) res.status(500).send("Error processing video");
       })
       .pipe(res, { end: true });
 
   } catch (err) {
-    console.error("Download error:", err);
-    res.status(500).send("Error processing video");
+    console.error("Download error:", err?.message || err);
+    if (!res.headersSent) res.status(500).send("Error processing video");
   }
 });
 
+// Start server
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
 });
